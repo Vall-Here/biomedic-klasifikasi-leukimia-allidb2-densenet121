@@ -1,0 +1,5 @@
+numpy==1.23.5
+matplotlib
+scikit-learn
+scikit-image>=0.19.3
+# tensorflow>=2.10.0
