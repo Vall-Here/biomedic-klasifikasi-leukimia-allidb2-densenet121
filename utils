@@ -1,0 +1,128 @@
+# Imports
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+from skimage.io import imread
+from skimage.feature import greycomatrix, greycoprops
+import tensorflow as tf
+from tensorflow.keras.applications import DenseNet121
+from tensorflow.keras.layers import Input, Dense, GlobalAveragePooling2D, concatenate
+from tensorflow.keras.models import Model
+from tensorflow.keras.utils import to_categorical
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import classification_report, confusion_matrix
+from collections import Counter
+
+
+
+# 1. Data Understanding
+
+def get_image_paths(data_dir):
+    image_paths = []
+    labels = []
+    classes = sorted([d for d in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, d))])
+    for cls in classes:
+        cls_dir = os.path.join(data_dir, cls)
+        for fname in os.listdir(cls_dir):
+            if fname.lower().endswith(('.jpg', '.png', '.jpeg')):
+                image_paths.append(os.path.join(cls_dir, fname))
+                labels.append(cls)
+    return image_paths, labels, classes
+
+# 2. Preprocessing & GLCM Feature Extraction
+
+def load_and_preprocess_image(path, image_size):
+    img = imread(path)
+    img = tf.image.resize(img, image_size).numpy().astype('uint8')
+    img_norm = img / 255.0
+    return img_norm
+
+def extract_glcm_features(img, distances, angles):
+    # use green channel
+    green = (img[:, :, 1] * 255).astype('uint8')
+    glcm = greycomatrix(green, distances=distances, angles=angles,
+                        levels=256, symmetric=True, normed=True)
+    props = ['contrast', 'dissimilarity', 'homogeneity', 'energy', 'correlation', 'ASM']
+    feats = [greycoprops(glcm, prop).mean() for prop in props]
+    return np.array(feats)
+
+# 3. Dataset Creation
+
+def create_dataset(image_paths, labels, image_size, distances, angles):
+    X, X_feats = [], []
+    for path in image_paths:
+        img = load_and_preprocess_image(path, image_size)
+        feats = extract_glcm_features(img, distances, angles)
+        X.append(img)
+        X_feats.append(feats)
+    X = np.array(X)
+    X_feats = np.array(X_feats)
+    le = LabelEncoder()
+    y_enc = le.fit_transform(labels)
+    y_cat = to_categorical(y_enc)
+    return X, X_feats, y_cat, le
+
+# 4. Model Building
+
+def build_model(image_shape, num_features, num_classes):
+    base = DenseNet121(weights='imagenet', include_top=False, input_shape=image_shape)
+    base.trainable = False
+    x = base.output
+    x = GlobalAveragePooling2D()(x)
+    input_feats = Input(shape=(num_features,))
+    combined = concatenate([x, input_feats])
+    x = Dense(256, activation='relu')(combined)
+    output = Dense(num_classes, activation='softmax')(x)
+    model = Model(inputs=[base.input, input_feats], outputs=output)
+    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+    return model
+
+# 5. Training & Evaluation
+
+def train_model(model, X_train, Xf_train, y_train, X_val, Xf_val, y_val, epochs, batch_size):
+    history = model.fit([X_train, Xf_train], y_train,
+                        validation_data=([X_val, Xf_val], y_val),
+                        epochs=epochs, batch_size=batch_size)
+    return history
+
+def evaluate_model(model, X_test, Xf_test, y_test, classes):
+    preds = model.predict([X_test, Xf_test])
+    y_pred = np.argmax(preds, axis=1)
+    y_true = np.argmax(y_test, axis=1)
+    print("Classification Report:")
+    print(classification_report(y_true, y_pred, target_names=classes))
+    print("Confusion Matrix:")
+    print(confusion_matrix(y_true, y_pred))
+
+
+
+
+image_size = (224, 224)
+distances = [1]
+angles = [0, np.pi/4, np.pi/2, 3*np.pi/4]
+batch_size = 16
+epochs = 20
+data_dir = 'ALLIDB'
+
+# Load paths and labels
+image_paths, labels, class_names = get_image_paths(data_dir)
+
+
+# Create dataset
+X, X_feats, y, le = create_dataset(image_paths, labels, image_size, distances, angles)
+num_classes = len(le.classes_)
+
+
+# Split data
+from sklearn.model_selection import train_test_split
+X_train, X_test, Xf_train, Xf_test, y_train, y_test = train_test_split(
+    X, X_feats, y, test_size=0.3, stratify=y, random_state=42)
+
+# Build, train, and evaluate model
+model = build_model(image_shape=image_size + (3,), num_features=X_feats.shape[1], num_classes=num_classes)
+
+model.summary()
+
+
+history = train_model(model, X_train, Xf_train, y_train, X_test, Xf_test, y_test, epochs, batch_size)
+evaluate_model(model, X_test, Xf_test, y_test, le.classes_)
