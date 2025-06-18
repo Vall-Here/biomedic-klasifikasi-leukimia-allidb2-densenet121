@@ -1,5 +1,5 @@
-numpy==1.23.5
-matplotlib
+opencv
+numpy
+pandas
 scikit-learn
-scikit-image>=0.19.3
-# tensorflow>=2.10.0
+matplotlib
